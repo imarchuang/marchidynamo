@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -165,13 +166,32 @@ func (n *Node) handlePut(w http.ResponseWriter, r *http.Request, key string) {
 	}
 	rec := store.Record{Key: key, Value: string(body), Ts: ts, Origin: n.cfg.ID}
 	pref := n.ring.PreferenceList(key)
-	acked := make([]string, 0, len(pref))
+	type wr struct {
+		id  string
+		err error
+	}
+	ch := make(chan wr, len(pref))
 	for _, m := range pref {
-		if err := n.writeReplica(m, rec); err != nil {
-			http.Error(w, fmt.Sprintf("replica %s: %v", m.ID, err), http.StatusBadGateway)
-			return
+		go func(m ring.Member) {
+			ch <- wr{m.ID, n.writeReplica(m, rec)}
+		}(m)
+	}
+	acked := make([]string, 0, len(pref))
+	for range pref {
+		got := <-ch
+		if got.err == nil {
+			acked = append(acked, got.id)
 		}
-		acked = append(acked, m.ID)
+	}
+	if len(acked) < n.cfg.W {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"ok":       false,
+			"error":    "write quorum not met",
+			"w":        n.cfg.W,
+			"acked":    acked,
+			"required": n.cfg.W,
+		})
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":       true,
@@ -184,19 +204,45 @@ func (n *Node) handlePut(w http.ResponseWriter, r *http.Request, key string) {
 
 func (n *Node) handleGet(w http.ResponseWriter, r *http.Request, key string) {
 	pref := n.ring.PreferenceList(key)
+	type rr struct {
+		id  string
+		rec store.Record
+		ok  bool
+		err error
+	}
+	ch := make(chan rr, len(pref))
+	for _, m := range pref {
+		go func(m ring.Member) {
+			rec, ok, err := n.readReplica(m, key)
+			ch <- rr{m.ID, rec, ok, err}
+		}(m)
+	}
 	var best store.Record
 	var found bool
 	replicas := make([]string, 0, len(pref))
-	for _, m := range pref {
-		rec, err := n.readReplica(m, key)
-		if err != nil {
+	answered := 0
+	for range pref {
+		got := <-ch
+		if got.err != nil {
 			continue
 		}
-		replicas = append(replicas, m.ID)
-		if !found || rec.Ts > best.Ts {
-			best = rec
-			found = true
+		answered++
+		if got.ok {
+			replicas = append(replicas, got.id)
+			if !found || got.rec.Ts > best.Ts {
+				best = got.rec
+				found = true
+			}
 		}
+	}
+	if answered < n.cfg.R {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"ok":    false,
+			"error": "read quorum not met",
+			"r":     n.cfg.R,
+			"got":   answered,
+		})
+		return
 	}
 	if !found {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -275,29 +321,29 @@ func (n *Node) writeReplica(m ring.Member, rec store.Record) error {
 	return nil
 }
 
-func (n *Node) readReplica(m ring.Member, key string) (store.Record, error) {
+func (n *Node) readReplica(m ring.Member, key string) (store.Record, bool, error) {
 	if m.ID == n.cfg.ID {
 		rec, ok := n.store.Get(key)
-		if !ok {
-			return store.Record{}, fmt.Errorf("not found")
-		}
-		return rec, nil
+		return rec, ok, nil
 	}
-	url := "http://" + m.Addr + "/internal/read?key=" + key
+	url := "http://" + m.Addr + "/internal/read?key=" + url.QueryEscape(key)
 	resp, err := n.client.Get(url)
 	if err != nil {
-		return store.Record{}, err
+		return store.Record{}, false, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return store.Record{}, false, nil
+	}
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		return store.Record{}, fmt.Errorf("status %d: %s", resp.StatusCode, b)
+		return store.Record{}, false, fmt.Errorf("status %d: %s", resp.StatusCode, b)
 	}
 	var rec store.Record
 	if err := json.NewDecoder(resp.Body).Decode(&rec); err != nil {
-		return store.Record{}, err
+		return store.Record{}, false, err
 	}
-	return rec, nil
+	return rec, true, nil
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
