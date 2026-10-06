@@ -36,7 +36,8 @@ PUT/GET to the N-node preference list (`/internal/replicate`, `/internal/read`).
 PUT waits for **W** replica acks; GET waits for **R** replica replies and
 returns the max timestamp. Defaults **N=3 W=2 R=2**. Conflict rule is
 **last-write-wins** on unix nanoseconds (`X-Ts`); an older PUT arriving
-later does not overwrite.
+later does not overwrite. Failed replica writes are stored as **hints**
+and replayed when the peer returns; GET **read-repairs** stale copies.
 
 Peers are `id=token=host:port`, e.g. `d2=200=d2:8002`.
 
@@ -60,6 +61,8 @@ Flags: `-id`, `-listen`, `-token`, `-peers`, `-n -w -r`, `-dataDir`.
 {dataDir}/
   node.json              # id, token, peers
   wal.jsonl              # {key, value, ts, origin}
+  hints/
+    {downNodeId}.jsonl   # writes to replay when the peer returns
 ```
 
 The in-memory map is rebuilt from `wal.jsonl` on start.

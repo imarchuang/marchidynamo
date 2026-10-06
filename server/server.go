@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/marchi/marchidynamo/ring"
@@ -26,6 +28,8 @@ type Config struct {
 	N, W, R int
 	DataDir string
 	HTTP    *http.Client
+	// HintInterval is how often to retry hinted handoff (default 200ms).
+	HintInterval time.Duration
 }
 
 // Node is a Dynamo-style replica that can coordinate writes.
@@ -34,6 +38,8 @@ type Node struct {
 	store  *store.Store
 	ring   *ring.Ring
 	client *http.Client
+	cancel context.CancelFunc
+	hintMu sync.Mutex
 }
 
 // OpenStore starts the WAL-backed map, builds the static ring, and writes node.json.
@@ -71,10 +77,21 @@ func OpenStore(cfg Config) (*Node, error) {
 		cli = &http.Client{Timeout: 2 * time.Second}
 	}
 	n := &Node{cfg: cfg, store: st, ring: rng, client: cli}
+	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "hints"), 0o755); err != nil {
+		_ = st.Close()
+		return nil, err
+	}
 	if err := n.writeMeta(); err != nil {
 		_ = st.Close()
 		return nil, err
 	}
+	interval := cfg.HintInterval
+	if interval <= 0 {
+		interval = 200 * time.Millisecond
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	n.cancel = cancel
+	go n.hintLoop(ctx, interval)
 	return n, nil
 }
 
@@ -97,8 +114,11 @@ func (n *Node) writeMeta() error {
 	return os.WriteFile(filepath.Join(n.cfg.DataDir, "node.json"), append(b, '\n'), 0o644)
 }
 
-// Close releases the store.
+// Close stops hint replay and releases the store.
 func (n *Node) Close() error {
+	if n.cancel != nil {
+		n.cancel()
+	}
 	return n.store.Close()
 }
 
@@ -204,32 +224,28 @@ func (n *Node) handlePut(w http.ResponseWriter, r *http.Request, key string) {
 
 func (n *Node) handleGet(w http.ResponseWriter, r *http.Request, key string) {
 	pref := n.ring.PreferenceList(key)
-	type rr struct {
-		id  string
-		rec store.Record
-		ok  bool
-		err error
-	}
-	ch := make(chan rr, len(pref))
+	ch := make(chan replicaView, len(pref))
 	for _, m := range pref {
 		go func(m ring.Member) {
 			rec, ok, err := n.readReplica(m, key)
-			ch <- rr{m.ID, rec, ok, err}
+			ch <- replicaView{id: m.ID, rec: rec, ok: ok, err: err}
 		}(m)
 	}
 	var best store.Record
 	var found bool
 	replicas := make([]string, 0, len(pref))
 	answered := 0
+	results := make([]replicaView, 0, len(pref))
 	for range pref {
 		got := <-ch
+		results = append(results, got)
 		if got.err != nil {
 			continue
 		}
 		answered++
 		if got.ok {
 			replicas = append(replicas, got.id)
-			if !found || got.rec.Ts > best.Ts {
+			if !found || store.Newer(got.rec, best) {
 				best = got.rec
 				found = true
 			}
@@ -248,6 +264,7 @@ func (n *Node) handleGet(w http.ResponseWriter, r *http.Request, key string) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	n.readRepair(pref, results, best)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"value":    best.Value,
 		"ts":       best.Ts,
@@ -296,6 +313,14 @@ func (n *Node) handleRead(w http.ResponseWriter, r *http.Request) {
 }
 
 func (n *Node) writeReplica(m ring.Member, rec store.Record) error {
+	err := n.replicate(m, rec)
+	if err != nil && m.ID != n.cfg.ID {
+		_ = n.appendHint(m.ID, rec)
+	}
+	return err
+}
+
+func (n *Node) replicate(m ring.Member, rec store.Record) error {
 	if m.ID == n.cfg.ID {
 		return n.store.Put(rec)
 	}
