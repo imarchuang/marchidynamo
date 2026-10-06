@@ -16,6 +16,7 @@ type testCluster struct {
 	srvs  []*http.Server
 	addr  []string
 	ids   []string
+	cfgs  []Config
 }
 
 func startCluster(t *testing.T, nFactor, w, r int) *testCluster {
@@ -34,6 +35,7 @@ func startCluster(t *testing.T, nFactor, w, r int) *testCluster {
 	tokens := []uint64{100, 200, 300}
 	nodes := make([]*Node, 3)
 	srvs := make([]*http.Server, 3)
+	cfgs := make([]Config, 0, 3)
 	cli := &http.Client{Timeout: 400 * time.Millisecond}
 	for i := 0; i < 3; i++ {
 		var peers []string
@@ -43,17 +45,20 @@ func startCluster(t *testing.T, nFactor, w, r int) *testCluster {
 			}
 			peers = append(peers, fmt.Sprintf("%s=%d=%s", ids[j], tokens[j], addr[j]))
 		}
-		node, err := OpenStore(Config{
-			ID:      ids[i],
-			Listen:  addr[i],
-			Token:   tokens[i],
-			Peers:   peers,
-			N:       nFactor,
-			W:       w,
-			R:       r,
-			DataDir: t.TempDir(),
-			HTTP:    cli,
-		})
+		cfg := Config{
+			ID:           ids[i],
+			Listen:       addr[i],
+			Token:        tokens[i],
+			Peers:        peers,
+			N:            nFactor,
+			W:            w,
+			R:            r,
+			DataDir:      t.TempDir(),
+			HTTP:         cli,
+			HintInterval: 50 * time.Millisecond,
+		}
+		cfgs = append(cfgs, cfg)
+		node, err := OpenStore(cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -63,7 +68,7 @@ func startCluster(t *testing.T, nFactor, w, r int) *testCluster {
 			_ = s.Serve(l)
 		}(srvs[i], listeners[i])
 	}
-	c := &testCluster{t: t, nodes: nodes, srvs: srvs, addr: addr, ids: ids}
+	c := &testCluster{t: t, nodes: nodes, srvs: srvs, addr: addr, ids: ids, cfgs: cfgs}
 	t.Cleanup(c.close)
 	return c
 }
@@ -81,7 +86,28 @@ func (c *testCluster) close() {
 
 func (c *testCluster) kill(i int) {
 	c.t.Helper()
-	_ = c.srvs[i].Close()
+	if c.srvs[i] != nil {
+		_ = c.srvs[i].Close()
+	}
+	if c.nodes[i] != nil {
+		_ = c.nodes[i].Close()
+	}
+}
+
+func (c *testCluster) restart(i int) {
+	c.t.Helper()
+	n, err := OpenStore(c.cfgs[i])
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", c.addr[i])
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	srv := &http.Server{Handler: n.Handler()}
+	go func() { _ = srv.Serve(ln) }()
+	c.nodes[i] = n
+	c.srvs[i] = srv
 }
 
 func (c *testCluster) put(coord int, key, val, ts string) (int, string) {
