@@ -31,8 +31,11 @@ curl -s http://127.0.0.1:8001/kv/cart
 curl -s http://127.0.0.1:8001/healthz
 ```
 
-Slice 0 is a **single-node** store: PUT/GET hit the local WAL only.
-Later slices add the ring, quorum, LWW, and repair.
+The coordinator hashes the key onto a **static token ring** and forwards
+PUT/GET to the N-node preference list (`/internal/replicate`, `/internal/read`).
+Quorum W/R, LWW, and repair land in later slices.
+
+Peers are `id=token=host:port`, e.g. `d2=200=d2:8002`.
 
 ---
 
