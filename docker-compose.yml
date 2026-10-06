@@ -6,7 +6,7 @@ services:
       - -id=d1
       - -listen=:8001
       - -token=100
-      - -peers=d2:8002,d3:8003
+      - -peers=d2=200=d2:8002,d3=300=d3:8003
       - -n=3
       - -w=2
       - -r=2
@@ -27,7 +27,7 @@ services:
       - -id=d2
       - -listen=:8002
       - -token=200
-      - -peers=d1:8001,d3:8003
+      - -peers=d1=100=d1:8001,d3=300=d3:8003
       - -n=3
       - -w=2
       - -r=2
@@ -48,7 +48,7 @@ services:
       - -id=d3
       - -listen=:8003
       - -token=300
-      - -peers=d1:8001,d2:8002
+      - -peers=d1=100=d1:8001,d2=200=d2:8002
       - -n=3
       - -w=2
       - -r=2

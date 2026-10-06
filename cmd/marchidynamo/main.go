@@ -17,7 +17,7 @@ func main() {
 	id := flag.String("id", envOr("MARCHIDYNAMO_ID", "d1"), "node id")
 	listen := flag.String("listen", envOr("MARCHIDYNAMO_LISTEN", ":8001"), "listen address")
 	token := flag.Uint64("token", envUint64("MARCHIDYNAMO_TOKEN", 100), "ring token")
-	peers := flag.String("peers", envOr("MARCHIDYNAMO_PEERS", ""), "comma-separated peer host:port")
+	peers := flag.String("peers", envOr("MARCHIDYNAMO_PEERS", ""), "comma-separated peers id=token=host:port")
 	n := flag.Int("n", envInt("MARCHIDYNAMO_N", 3), "replication factor")
 	w := flag.Int("w", envInt("MARCHIDYNAMO_W", 2), "write quorum")
 	r := flag.Int("r", envInt("MARCHIDYNAMO_R", 2), "read quorum")
