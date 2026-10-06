@@ -34,7 +34,9 @@ curl -s http://127.0.0.1:8001/healthz
 The coordinator hashes the key onto a **static token ring** and forwards
 PUT/GET to the N-node preference list (`/internal/replicate`, `/internal/read`).
 PUT waits for **W** replica acks; GET waits for **R** replica replies and
-returns the max timestamp. Defaults **N=3 W=2 R=2**.
+returns the max timestamp. Defaults **N=3 W=2 R=2**. Conflict rule is
+**last-write-wins** on unix nanoseconds (`X-Ts`); an older PUT arriving
+later does not overwrite.
 
 Peers are `id=token=host:port`, e.g. `d2=200=d2:8002`.
 
