@@ -72,7 +72,7 @@ func (s *Store) replay(f *os.File) error {
 		if rec.Key == "" {
 			continue
 		}
-		s.data[rec.Key] = rec
+		s.applyLocked(rec)
 	}
 	if err := sc.Err(); err != nil {
 		return fmt.Errorf("scan wal: %w", err)
@@ -80,11 +80,32 @@ func (s *Store) replay(f *os.File) error {
 	return nil
 }
 
-// Put appends rec to the WAL and overwrites the in-memory value.
+// Put appends rec to the WAL only if it wins last-write-wins (higher ts).
 func (s *Store) Put(rec Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if cur, ok := s.data[rec.Key]; ok && !Newer(rec, cur) {
+		return nil
+	}
 	return s.putLocked(rec)
+}
+
+// Newer reports whether a should replace b (LWW unix nano, then origin, then value).
+func Newer(a, b Record) bool {
+	if a.Ts != b.Ts {
+		return a.Ts > b.Ts
+	}
+	if a.Origin != b.Origin {
+		return a.Origin > b.Origin
+	}
+	return a.Value > b.Value
+}
+
+func (s *Store) applyLocked(rec Record) {
+	if cur, ok := s.data[rec.Key]; ok && !Newer(rec, cur) {
+		return
+	}
+	s.data[rec.Key] = rec
 }
 
 func (s *Store) putLocked(rec Record) error {

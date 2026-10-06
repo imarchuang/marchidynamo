@@ -54,3 +54,24 @@ func TestGetMissing(t *testing.T) {
 		t.Fatal("expected miss")
 	}
 }
+
+func TestLWWOlderPutDoesNotOverwrite(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	newer := Record{Key: "cart", Value: "new", Ts: 100, Origin: "d1"}
+	older := Record{Key: "cart", Value: "old", Ts: 50, Origin: "d2"}
+	if err := s.Put(newer); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put(older); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := s.Get("cart")
+	if !ok || got.Value != "new" || got.Ts != 100 {
+		t.Fatalf("lww got %+v", got)
+	}
+}
+
