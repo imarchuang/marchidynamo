@@ -47,7 +47,8 @@ Peers are `id=token=host:port`, e.g. `d2=200=d2:8002`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/healthz` | node id, token, N/W/R, peers |
+| GET | `/healthz` | node id, token, N/W/R, peer health |
+| GET | `/ring` | token map + preference list (`?key=` sample, default `cart`) |
 | PUT | `/kv/{key}` | body is the value; optional `X-Ts` unix nano |
 | GET | `/kv/{key}` | `{value, ts, origin, replicas[]}` |
 
@@ -66,3 +67,26 @@ Flags: `-id`, `-listen`, `-token`, `-peers`, `-n -w -r`, `-dataDir`.
 ```
 
 The in-memory map is rebuilt from `wal.jsonl` on start.
+
+See [QUORUM.md](QUORUM.md) for Dynamo-style quorum vs Raft.
+
+---
+
+## Docker demo
+
+```bash
+docker compose up --build
+curl -s -X PUT http://127.0.0.1:8001/kv/cart -d '{"n":1}'
+curl -s 'http://127.0.0.1:8001/ring?key=cart'
+
+# partition one replica (from another terminal)
+docker compose stop d3
+curl -s -X PUT http://127.0.0.1:8001/kv/cart -d '{"n":2}'    # still W=2
+# W=3 would 503; defaults are W=2 R=2
+
+docker compose start d3
+# GET until d3 has n=2 (hint replay and/or read repair)
+curl -s http://127.0.0.1:8001/kv/cart
+curl -s http://127.0.0.1:8003/internal/read?key=cart
+```
+

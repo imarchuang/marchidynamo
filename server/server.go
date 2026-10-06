@@ -129,6 +129,7 @@ func (n *Node) Ring() *ring.Ring { return n.ring }
 func (n *Node) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", n.handleHealthz)
+	mux.HandleFunc("/ring", n.handleRing)
 	mux.HandleFunc("/kv/", n.handleKV)
 	mux.HandleFunc("/internal/replicate", n.handleReplicate)
 	mux.HandleFunc("/internal/read", n.handleRead)
@@ -141,15 +142,55 @@ func (n *Node) handleHealthz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"id":      n.cfg.ID,
-		"token":   n.cfg.Token,
-		"listen":  n.cfg.Listen,
-		"n":       n.cfg.N,
-		"w":       n.cfg.W,
-		"r":       n.cfg.R,
-		"peers":   n.cfg.Peers,
-		"members": n.ring.Members(),
+		"ok":          true,
+		"id":          n.cfg.ID,
+		"token":       n.cfg.Token,
+		"listen":      n.cfg.Listen,
+		"n":           n.cfg.N,
+		"w":           n.cfg.W,
+		"r":           n.cfg.R,
+		"peers":       n.cfg.Peers,
+		"members":     n.ring.Members(),
+		"peer_health": n.peerHealth(),
+	})
+}
+
+func (n *Node) peerHealth() []map[string]any {
+	out := make([]map[string]any, 0)
+	for _, m := range n.ring.Members() {
+		if m.ID == n.cfg.ID {
+			out = append(out, map[string]any{"id": m.ID, "addr": m.Addr, "ok": true, "self": true})
+			continue
+		}
+		resp, err := n.client.Get("http://" + m.Addr + "/healthz")
+		ok := err == nil && resp != nil && resp.StatusCode == 200
+		if resp != nil {
+			resp.Body.Close()
+		}
+		out = append(out, map[string]any{"id": m.ID, "addr": m.Addr, "ok": ok})
+	}
+	return out
+}
+
+func (n *Node) handleRing(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		key = "cart"
+	}
+	h := ring.HashKey(key)
+	pref := n.ring.PreferenceList(key)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"members":         n.ring.Members(),
+		"n":               n.cfg.N,
+		"w":               n.cfg.W,
+		"r":               n.cfg.R,
+		"sample_key":      key,
+		"hash":            h,
+		"preference_list": pref,
 	})
 }
 
