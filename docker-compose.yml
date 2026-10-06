@@ -1,0 +1,69 @@
+services:
+  d1:
+    build: .
+    image: marchidynamo:local
+    command:
+      - -id=d1
+      - -listen=:8001
+      - -token=100
+      - -peers=d2:8002,d3:8003
+      - -n=3
+      - -w=2
+      - -r=2
+      - -dataDir=/data
+    ports:
+      - "8001:8001"
+    volumes:
+      - d1-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8001/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+  d2:
+    build: .
+    image: marchidynamo:local
+    command:
+      - -id=d2
+      - -listen=:8002
+      - -token=200
+      - -peers=d1:8001,d3:8003
+      - -n=3
+      - -w=2
+      - -r=2
+      - -dataDir=/data
+    ports:
+      - "8002:8002"
+    volumes:
+      - d2-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8002/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+  d3:
+    build: .
+    image: marchidynamo:local
+    command:
+      - -id=d3
+      - -listen=:8003
+      - -token=300
+      - -peers=d1:8001,d2:8002
+      - -n=3
+      - -w=2
+      - -r=2
+      - -dataDir=/data
+    ports:
+      - "8003:8003"
+    volumes:
+      - d3-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8003/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  d1-data:
+  d2-data:
+  d3-data:
